@@ -42,6 +42,7 @@ public static class MacOSIconPostprocessor
         if (Directory.Exists(projectIconPath))
             Directory.Delete(projectIconPath, true);
         CopyDirectory(sourceIconPath, projectIconPath);
+        ClearExtendedAttributes(projectIconPath);
 
         var project = new PBXProject();
         project.ReadFromString(File.ReadAllText(pbxProjectPath));
@@ -55,9 +56,11 @@ public static class MacOSIconPostprocessor
 
         RemoveProjectFileIfExists(project, "Images.xcassets");
         RemoveProjectFileIfExists(project, "Unity-iPhone/Images.xcassets");
+        RemoveProjectFileIfExists(project, "MateEngineX/PlugIns/libusearch_c.so");
         project.AddFileToBuild(mainTargetGuid, iconGuid);
         project.SetBuildProperty(mainTargetGuid, "ASSETCATALOG_COMPILER_APPICON_NAME", IconName);
-        File.WriteAllText(pbxProjectPath, project.WriteToString());
+        ConfigureLocalMacSigning(project, mainTargetGuid);
+        File.WriteAllText(pbxProjectPath, NormalizeIconComposerFileType(project.WriteToString()));
 
         if (TryFindInfoPlist(projectRoot, out string plistPath))
         {
@@ -73,6 +76,24 @@ public static class MacOSIconPostprocessor
 
         Debug.Log("[MacOSIconPostprocessor] Added Icon Composer package to macOS Xcode project: " + projectIconPath);
         return true;
+    }
+
+    static void ConfigureLocalMacSigning(PBXProject project, string targetGuid)
+    {
+        project.SetBuildProperty(targetGuid, "CODE_SIGN_STYLE", "Manual");
+        project.SetBuildProperty(targetGuid, "CODE_SIGN_IDENTITY", "-");
+        project.SetBuildProperty(targetGuid, "CODE_SIGN_IDENTITY[sdk=macosx*]", "-");
+        project.SetBuildProperty(targetGuid, "DEVELOPMENT_TEAM", "");
+        project.SetBuildProperty(targetGuid, "PROVISIONING_PROFILE_SPECIFIER", "");
+        project.SetBuildProperty(targetGuid, "CODE_SIGN_INJECT_BASE_ENTITLEMENTS", "NO");
+    }
+
+    static string NormalizeIconComposerFileType(string projectText)
+    {
+        string fileName = IconName + ".icon";
+        string oldEntry = "/* " + fileName + " */ = {isa = PBXFileReference; lastKnownFileType = file; path = " + fileName + "; sourceTree = SOURCE_ROOT; };";
+        string newEntry = "/* " + fileName + " */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = " + fileName + "; sourceTree = SOURCE_ROOT; };";
+        return projectText.Replace(oldEntry, newEntry);
     }
 
     static void RemoveProjectFileIfExists(PBXProject project, string projectPath)
@@ -126,6 +147,7 @@ public static class MacOSIconPostprocessor
             File.Copy(tempIcns, destinationIcns, true);
             SetAppBundleIconFile(appBundlePath, RemoveIcnsExtension(bundleIconName));
             DeleteExtraLegacyIcon(resourcesDir, destinationIcns);
+            ClearExtendedAttributes(appBundlePath);
             TouchAppBundle(appBundlePath);
             ResignAppBundle(appBundlePath);
             RegisterAppBundleWithLaunchServices(appBundlePath);
@@ -303,6 +325,15 @@ public static class MacOSIconPostprocessor
 
         if (!RunTool(lsRegisterPath, "-f " + Quote(appBundlePath), out string output))
             Debug.LogWarning("[MacOSIconPostprocessor] LaunchServices registration refresh failed:\n" + output);
+    }
+
+    static void ClearExtendedAttributes(string path)
+    {
+        if (!File.Exists("/usr/bin/xattr") || string.IsNullOrEmpty(path))
+            return;
+
+        if (!RunTool("/usr/bin/xattr", "-cr " + Quote(path), out string output))
+            Debug.LogWarning("[MacOSIconPostprocessor] xattr cleanup failed for " + path + ":\n" + output);
     }
 
     static void DeleteExtraLegacyIcon(string resourcesDir, string destinationIcns)
